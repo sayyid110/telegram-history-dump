@@ -1,7 +1,10 @@
 ---
 
   ## Backup targets ##
-  #
+
+  # Backup contacts?
+  backup_contacts: true
+
   # Array of strings for each category
   # Strings can be either a (partial) name or a telegram-cli "peer_id" value
   # An empty array means "everything in this category"
@@ -37,7 +40,7 @@
 
   # By default telegram-cli returns only the first 100 dialogs/channels
   # We increase this to 1000. If you have even more, increase this value
-  maximum_dialogs: 1000
+  maximum_dialogs: 5000
 
 
   ## Output options ##
@@ -51,12 +54,12 @@
   #  },
   #  bare: {},
   #  pisg: {},
-  #  html: {
-  #    paginate: 1500, # messages per page
-  #    use_utc_time: false,
-  #    timestamps_every: 50, # messages
-  #    loop_video: true, # loop and autoplay videos
-  #  },
+    html: {
+      paginate: 500, # messages per page
+      use_utc_time: false,
+      timestamps_every: 50, # messages
+      loop_video: true, # loop and autoplay videos
+    },
   }
 
   # Target directory for the backup files
@@ -87,7 +90,7 @@
 
   # False to reference downloaded files in the telegram-cli cache
   # True to copy downloaded media to a dedicated directory per dialog
-  copy_media: false
+  copy_media: true
 
   # True to delete media files from telegram-cli cache right after downloading
   # Effectively turns copy_media into move_media
@@ -126,11 +129,11 @@
   chunk_timeout: 10
 
   # Number of times to retry getting one chunk
-  chunk_retry: 3
+  chunk_retry: 5
 
   # Time in seconds to wait before considering a download stuck (0 = infinite)
   # After this time the script skips to the next message
-  media_timeout: 100
+  media_timeout: 600
 
 
   ## Advanced behavior settings ##

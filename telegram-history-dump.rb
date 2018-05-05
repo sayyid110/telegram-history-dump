@@ -49,11 +49,12 @@ def exec_tg_command(command, *arguments)
   $sock.gets # Skip the terminating newline
   if json.is_a?(Hash) && json['result'] == 'FAIL'
     raise 'Telegram command <%s> failed: %s' % [command, json]
+    # $log.error('Telegram command <%s> failed: %s' % [command, json])
   end
   json
 end
 
-def dump_dialog(dialog)
+def dump_dialog(dialog, index, dialogs_count)
   if $config['download_media'].values.any? && $config['copy_media']
     FileUtils.mkdir_p(get_media_dir(dialog))
   end
@@ -67,7 +68,9 @@ def dump_dialog(dialog)
   keep_dumping = true
   while keep_dumping do
     cur_offset = offset
-    $log.info('Dumping "%s" (range %d-%d)' % [
+    $log.info('Dumping %d/%d "%s" (range %d-%d)' % [
+	        index + 1,
+		dialogs_count,
                 dialog['print_name'],
                 cur_offset + 1,
                 cur_offset + $config['chunk_size']
@@ -84,6 +87,7 @@ def dump_dialog(dialog)
                    ])
         msg_chunk = []
         offset += $config['chunk_size']
+        keep_dumping = false
         break
       end
       last_chunk_download_time = Time.now
@@ -97,6 +101,13 @@ def dump_dialog(dialog)
         end
         $log.warn('telegram-cli returned a non array chunk, retrying... (%d/%d)' % [
           retry_count += 1, $config['chunk_retry']
+        ]) 
+      rescue StandardError => e
+        $log.warn('Failed to get history, offset: %d, error: %s, retrying... (%d/%d)' % [
+          cur_offset,
+          e,
+          retry_count += 1,
+          $config['chunk_retry']
         ])
       rescue Timeout::Error
         $log.warn('Timeout, retrying... (%d/%d)' % [
@@ -106,7 +117,7 @@ def dump_dialog(dialog)
     end
     raise 'Expected array' unless msg_chunk.is_a?(Array)
 
-    msg_chunk.reverse_each do |msg|
+    msg_chunk.reverse.each_with_index do |msg,i|
       dump_msg = true
       if msg['id'].to_s.empty?
         $log.warn('Dropping message without id: %s' % msg)
@@ -142,7 +153,7 @@ def dump_dialog(dialog)
       end
 
       if dump_msg
-        process_media(dialog, msg)
+        process_media(dialog, msg, i, msg_chunk.length)
         if $dumper.dump_msg(dialog, msg) == false
           keep_dumping = false
         end
@@ -166,19 +177,21 @@ def dump_dialog(dialog)
   cur_progress.dumper_state=(state)
 end
 
-def process_media(dialog, msg)
+def process_media(dialog, msg, index, messages_count)
   return unless msg.include?('media')
+#  $log.debug('%s' % msg)
   %w(document video photo audio).each do |media_type|
     next unless $config['download_media'][media_type]
     next unless msg['media']['type'] == media_type
     response = nil
+    $log.info('Loading document for msg %d/%d' % [index + 1,messages_count])
     begin
       Timeout::timeout($config['media_timeout']) do
         response = exec_tg_command('load_' + media_type, msg['id'])
       end
     rescue StandardError => e
       # This is a warning because we're going to log an error afterwards
-      $log.warn('Failed to download media file: %s' % e)
+      $log.warn('Failed to download media, type: %s, file: %s' % [media_type, e])
     end
     filename = case
       when response.nil? || !response.is_a?(Hash)
@@ -187,8 +200,19 @@ def process_media(dialog, msg)
       when $config['copy_media']
         filename = File.basename(response['result'])
         destination = File.join(get_media_dir(dialog), fix_media_ext(filename))
-        FileUtils.cp(response['result'], destination)
-        destination
+        if File.file?(destination) && File.size(destination) != File.size(response['result'])
+	  $log.warn('File exists with diferent size, deleting and replacing')
+          begin
+            File.delete(destination)
+          rescue StandardError => e
+            $log.error('Failed to delete destination media file: %s' % e)
+          end
+	end
+
+	if !File.file?(destination)
+          FileUtils.ln(response['result'], destination)
+          destination
+	end
       else
         response['result']
     end
@@ -331,11 +355,32 @@ end
 
 connect_socket
 
+if $config['backup_contacts']
+  $contacts_file = File.join(get_backup_dir, 'contacts.jsonl')
+
+  # Save contacts
+  $log.info('Backing up contacts')
+  contacts = exec_tg_command('contact_list')
+  $log.info('Got %d contacts' % contacts.length)
+
+  $log.info('Saving contacts...')
+  File.open($contacts_file, 'w:UTF-8') do |stream|
+    contacts.each do |contact|
+      stream.puts(contact)
+    end
+  end
+end
+
+$log.info('Getting dialog list')
 dialogs = exec_tg_command('dialog_list', $config['maximum_dialogs'])
+$log.info('Got %d dialogs' % dialogs.length)
+$log.info('Getting channels list')
 channels = exec_tg_command('channel_list', $config['maximum_dialogs'])
+$log.info('Got %d channels' % channels.length)
 raise 'Expected array' unless dialogs.is_a?(Array) && channels.is_a?(Array)
 dialogs = dialogs.concat(channels)
 raise 'No dialogs found' if dialogs.empty?
+$log.info('Total dialogs to process: %d' % dialogs.length)
 backup_list = []
 skip_list = []
 dialogs.each do |dialog|
@@ -364,10 +409,10 @@ dialogs.each do |dialog|
   end
 end
 
-$log.info('Skipping %d dialogs: %s' % [
+$log.info('Skipping %d dialogs:\n%s' % [
             skip_list.length, format_dialog_list(skip_list)
           ])
-$log.info('Backing up %d dialogs: %s' % [
+$log.info('Backing up %d dialogs:\n%s' % [
             backup_list.length, format_dialog_list(backup_list)
           ])
 
@@ -376,7 +421,7 @@ backup_list.each_with_index do |dialog,i|
   sleep($config['chunk_delay']) if i > 0
   begin
     connect_socket
-    dump_dialog(dialog)
+    dump_dialog(dialog, i, backup_list.length)
     save_progress
   rescue Timeout::Error
     $log.error('Unhandled timeout, skipping to next dialog')
